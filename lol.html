@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>SimpleMessenger — simple chat for communication</title>
+<title>SimpleMessenger Sync (single file)</title>
 <style>
   :root{--bg:#0f1724;--panel:#0b1220;--accent:#5865f2;--muted:#98a0b3;--msg:#e6eef8;--self:#2f9a4a;--danger:#e04b4b}
   *{box-sizing:border-box;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
@@ -49,12 +49,15 @@
   .msg-meta{font-size:13px;color:var(--muted);margin-bottom:6px}
   .profile-actions{display:flex;gap:8px;align-items:center;margin-top:8px}
   .small-muted{font-size:12px;color:var(--muted)}
+  .notice{font-size:12px;color:var(--muted);margin-top:6px}
 </style>
+<!-- Socket.io client (used only if SERVER_URL provided) -->
+<script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
-    <div class="brand">SimpleMessenger</div>
+    <div class="brand">SimpleMessenger Sync</div>
     <div class="muted">Текущий пользователь:</div>
     <div style="display:flex;align-items:center;gap:8px;">
       <img id="sidebarAvatar" class="avatar" src="" alt="avatar"/>
@@ -72,6 +75,7 @@
     <div style="margin-top:auto">
       <button id="btnOpenProfile">Профиль</button>
       <button id="btnLogout" style="background:#2b2b2b;margin-top:8px">Выйти</button>
+      <div id="syncNotice" class="notice"></div>
     </div>
   </aside>
 
@@ -97,11 +101,11 @@
       <input id="inputMessage" type="text" placeholder="Напишите сообщение или вставьте ссылку..." />
       <button id="btnSend">Отправить</button>
     </div>
-    <footer>Локальный прототип. Для пользователей без аватарки используется встроенная заглушка.</footer>
+    <footer>Работает с сервером через Socket.io если указан SERVER_URL; без сервера — локальный режим (вкладки)</footer>
   </main>
 </div>
 
-<!-- Модал аутентификации / профиль -->
+<!-- Модал / profile -->
 <div id="auth" class="auth">
   <div class="card">
     <h3 id="authTitle">Вход / Регистрация</h3>
@@ -167,7 +171,13 @@
 </div>
 
 <script>
-/* ======= Utilities ======= */
+/* ===================== CONFIG =====================
+ - Если у вас есть сервер (Node.js из примера), укажите его URL в SERVER_URL.
+ - Если оставить пустым, клиент работает в локальном режиме (localStorage + BroadcastChannel/storage).
+================================================== */
+const SERVER_URL = ''; // пример 'https://your-server.example.com' или '' для локального режима
+
+/* ===================== Utilities ===================== */
 async function sha256Hex(str){
   const enc = new TextEncoder().encode(str);
   const hash = await crypto.subtle.digest('SHA-256', enc);
@@ -176,25 +186,24 @@ async function sha256Hex(str){
 function qs(id){return document.getElementById(id)}
 function escapeHtml(s){ return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }
 
-/* ======= Placeholder avatar (SVG data URL) ======= */
+/* ======= DEFAULT AVATAR (SVG data URL) ======= */
 const DEFAULT_AVATAR = (()=>{
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 24 24' fill='none'><rect width='24' height='24' rx='4' fill='%233a3f47'/><path d='M12 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 2c-3.3 0-6 1.7-6 3v1h12v-1c0-1.3-2.7-3-6-3z' fill='%23fff' opacity='0.92'/></svg>`;
   return 'data:image/svg+xml;base64,' + btoa(svg);
 })();
 
 /* ======= Storage keys ======= */
-const USERS_KEY = 'sm_users_v2';
-const MESSAGES_KEY = 'sm_messages_v2';
-const APP_KEY = 'sm_app_v2';
-
-function loadJSON(k, fallback){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):fallback }catch(e){return fallback} }
-function saveJSON(k,v){ localStorage.setItem(k, JSON.stringify(v)) }
+const USERS_KEY = 'sm_users_v3';
+const MESSAGES_KEY = 'sm_messages_v3';
+const APP_KEY = 'sm_app_v3';
+const TOKEN_KEY = 'sm_token_v3';
 
 /* ======= State ======= */
-let users = loadJSON(USERS_KEY, {}); // users: { username: { hash, createdAt, avatar (dataURL|null) } }
-let messages = loadJSON(MESSAGES_KEY, { general: [] });
+let users = loadJSON(USERS_KEY, {}); // { username: { hash, createdAt, avatar } } // avatar: dataURL or URL
+let messages = loadJSON(MESSAGES_KEY, { general: [] }); // { channel: [ msg ] }
 let appState = loadJSON(APP_KEY, { lastChannel: 'general' });
 let currentUser = null;
+let token = localStorage.getItem(TOKEN_KEY) || null;
 
 /* ======= UI refs ======= */
 const authModal = qs('auth');
@@ -229,6 +238,7 @@ const btnOpenProfile = qs('btnOpenProfile');
 const btnCloseProfile = qs('btnCloseProfile');
 const btnSaveAvatar = qs('btnSaveAvatar');
 const btnRemoveAvatar = qs('btnRemoveAvatar');
+const syncNotice = qs('syncNotice');
 
 /* ======= Channels ======= */
 const CHANNELS = [
@@ -237,7 +247,7 @@ const CHANNELS = [
   {id:'dev', name:'#dev', desc:'Обсуждение разработки'}
 ];
 
-/* ======= Linkify ======= */
+/* ======= Linkify (URL -> <a>) ======= */
 function linkify(text){
   const urlRegex = /((https?:\/\/|www\.)[^\s<>"']+)/gi;
   return escapeHtml(text).replace(urlRegex, (m)=>{
@@ -248,10 +258,13 @@ function linkify(text){
 }
 
 /* ======= Helpers ======= */
+function loadJSON(k, fallback){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):fallback }catch(e){return fallback} }
+function saveJSON(k,v){ localStorage.setItem(k, JSON.stringify(v)); }
 function ensureChannel(ch){ if(!messages[ch]) messages[ch]=[]; }
 function saveMessages(){ saveJSON(MESSAGES_KEY, messages); }
 function saveUsers(){ saveJSON(USERS_KEY, users); }
 function saveApp(){ saveJSON(APP_KEY, appState); }
+function saveToken(t){ token = t; if(t) localStorage.setItem(TOKEN_KEY, t); else localStorage.removeItem(TOKEN_KEY); }
 
 function randomSuffix(){ return Math.random().toString(36).slice(2,9); }
 function createMessageObject(user, text, image){
@@ -275,14 +288,91 @@ function readFileAsDataURL(file){
   });
 }
 
-/* ======= Render UI ======= */
+/* ================= REALTIME LAYER =================
+ - If SERVER_URL set, client will use Socket.io + REST to sync across devices.
+ - If SERVER_URL empty or server unreachable, client uses local fallback:
+     BroadcastChannel (fast within same origin) + storage events for other windows.
+==================================================== */
+let socket = null;
+let usingServer = false;
+let bc = null;
+
+async function connectRealtime(){
+  if(!SERVER_URL) return startLocalRealtime();
+  // try to connect to socket.io server
+  try {
+    socket = io(SERVER_URL, { query: { token }, transports: ['websocket','polling'], autoConnect: false, reconnectionAttempts: 5 });
+    // set up handlers
+    socket.on('connect', ()=> {
+      usingServer = true;
+      syncNotice.textContent = 'Синхронизация: сервер';
+      // join current channel
+      socket.emit('join', appState.lastChannel || 'general');
+    });
+    socket.on('connect_error', (err)=>{
+      // failed to connect -> fallback
+      usingServer = false;
+      syncNotice.textContent = 'Сервер недоступен, локальный режим';
+      startLocalRealtime();
+    });
+    socket.on('message', ({channel, message})=>{
+      ensureChannel(channel);
+      if(!messages[channel].some(m=>m.id===message.id)){
+        messages[channel].push(message);
+        saveMessages();
+        renderMessages();
+      }
+    });
+    socket.on('message_deleted', ({channel, id})=>{
+      const idx = msgIndexById(channel, id);
+      if(idx !== -1){ messages[channel].splice(idx,1); saveMessages(); renderMessages(); }
+    });
+    socket.on('message_updated', ({channel, message})=>{
+      const idx = msgIndexById(channel, message.id);
+      if(idx !== -1){ messages[channel][idx] = message; saveMessages(); renderMessages(); }
+    });
+    socket.open();
+    // quick ping to check viability (fallback if not open soon)
+    setTimeout(()=>{ if(!socket.connected){ usingServer=false; connectRealtime(); } }, 2000);
+  } catch(e){
+    usingServer = false;
+    startLocalRealtime();
+  }
+}
+
+function startLocalRealtime(){
+  usingServer = false;
+  syncNotice.textContent = 'Синхронизация: локальная (вкладки)';
+  try { bc = new BroadcastChannel('sm_broadcast_v3'); bc.onmessage = (ev)=> handleLocalBroadcast(ev.data); } catch(e){ bc = null; }
+  window.addEventListener('storage', (ev)=>{
+    if(ev.key === 'sm_last_broadcast_v3' && ev.newValue) {
+      try{ const env = JSON.parse(ev.newValue); handleLocalBroadcast(env); } catch(e){}
+    }
+    if(ev.key === USERS_KEY && ev.newValue){ try{ users = JSON.parse(ev.newValue); renderUsers(); }catch(e){} }
+    if(ev.key === MESSAGES_KEY && ev.newValue){ try{ messages = JSON.parse(ev.newValue); renderMessages(); }catch(e){} }
+  });
+}
+function handleLocalBroadcast(env){
+  if(!env) return;
+  if(env.type === 'new_message'){ const { channel, message } = env; ensureChannel(channel); if(!messages[channel].some(m=>m.id===message.id)){ messages[channel].push(message); saveMessages(); renderMessages(); } }
+  if(env.type === 'delete_message'){ const { channel, id } = env; const idx = msgIndexById(channel,id); if(idx!==-1){ messages[channel].splice(idx,1); saveMessages(); renderMessages(); } }
+  if(env.type === 'update_message'){ const { channel, message } = env; const idx = msgIndexById(channel,message.id); if(idx!==-1){ messages[channel][idx] = message; saveMessages(); renderMessages(); } }
+}
+function broadcastLocal(env){
+  try{ if(bc) bc.postMessage(env); localStorage.setItem('sm_last_broadcast_v3', JSON.stringify(env)); } catch(e){}
+}
+
+/* ================= Render functions ================= */
+let activeMenu = null;
+document.addEventListener('click', (e)=>{ if(activeMenu && !activeMenu.contains(e.target)) { activeMenu.remove(); activeMenu=null; } });
+
 function renderChannels(){
   channelsWrap.innerHTML = '';
   CHANNELS.forEach(ch=>{
     const div = document.createElement('div');
     div.className = 'channel' + (appState.lastChannel===ch.id? ' active':'');
     div.textContent = ch.name;
-    div.onclick = ()=>{ appState.lastChannel = ch.id; saveApp(); renderChannels(); renderMessages(); renderHeader(); };
+    div.onclick = ()=>{ appState.lastChannel = ch.id; saveApp(); renderChannels(); renderMessages(); renderHeader(); if(usingServer && socket){ socket.emit('join', ch.id); } };
     channelsWrap.appendChild(div);
   });
 }
@@ -306,11 +396,6 @@ function renderUsers(){
 }
 function formatTime(ts){ const d=new Date(ts); return d.toLocaleTimeString(); }
 
-/* Close menus on click outside */
-let activeMenu = null;
-document.addEventListener('click', (e)=>{ if(activeMenu && !activeMenu.contains(e.target)) { activeMenu.remove(); activeMenu = null; } });
-
-/* Render messages including avatar */
 function renderMessages(){
   const ch = appState.lastChannel || 'general';
   ensureChannel(ch);
@@ -318,9 +403,7 @@ function renderMessages(){
   messagesWrap.innerHTML = '';
   list.forEach(m=>{
     const row = document.createElement('div'); row.className = 'msg-row';
-    // avatar
     const avatar = document.createElement('img'); avatar.className = 'avatar'; avatar.src = getUserAvatar(m.user); avatar.alt = m.user;
-    // message block
     const el = document.createElement('div');
     el.className = 'msg' + (m.user===currentUser? ' me':'') + (m.hidden? ' hidden':'');
     el.dataset.msgId = m.id;
@@ -342,16 +425,13 @@ function renderMessages(){
       }
     }
 
-    // three dots button
     const btn = document.createElement('button'); btn.className = 'three-dots'; btn.innerText = '⋯';
     btn.title = 'Меню сообщения';
     btn.dataset.msgId = m.id;
     btn.dataset.channel = ch;
-    btn.onclick = (e)=>{ e.stopPropagation(); openMessageMenu(e.currentTarget, m, ch); };
+    btn.onclick = (e)=>{ e.stopPropagation(); openMessageMenu(btn, m, ch); };
 
-    // append (avatar left for others, right for own)
     if(m.user === currentUser){
-      // own message aligned right: element then avatar
       row.appendChild(el);
       row.appendChild(avatar);
       row.appendChild(btn);
@@ -364,26 +444,25 @@ function renderMessages(){
   });
   messagesWrap.scrollTop = messagesWrap.scrollHeight;
 }
-
 function renderHeader(){
   const ch = CHANNELS.find(c=>c.id===appState.lastChannel) || CHANNELS[0];
   channelTitle.textContent = ch.name;
   qs('channelDesc').textContent = ch.desc;
 }
 
-/* ======= Message menu (delete / hide) ======= */
+/* ======= Message menu actions ======= */
 function openMessageMenu(button, message, channel){
-  if(activeMenu){ activeMenu.remove(); activeMenu = null; }
+  if(activeMenu){ activeMenu.remove(); activeMenu=null; }
   const rect = button.getBoundingClientRect();
   const menu = document.createElement('div'); menu.className = 'menu';
   // options
   if(message.hidden){
     const showBtn = document.createElement('button'); showBtn.textContent = 'Показать сообщение';
-    showBtn.onclick = (ev)=>{ ev.stopPropagation(); setHidden(message.id, channel, false); closeMenu(); };
+    showBtn.onclick = (ev)=>{ ev.stopPropagation(); toggleHidden(message.id, channel, false); closeMenu(); };
     menu.appendChild(showBtn);
   } else {
     const hideBtn = document.createElement('button'); hideBtn.textContent = 'Скрыть сообщение';
-    hideBtn.onclick = (ev)=>{ ev.stopPropagation(); setHidden(message.id, channel, true); closeMenu(); };
+    hideBtn.onclick = (ev)=>{ ev.stopPropagation(); toggleHidden(message.id, channel, true); closeMenu(); };
     menu.appendChild(hideBtn);
   }
   if(message.user === currentUser){
@@ -391,190 +470,145 @@ function openMessageMenu(button, message, channel){
     delBtn.onclick = (ev)=>{ ev.stopPropagation(); if(confirm('Удалить сообщение?')) { deleteMessage(channel, message.id); } closeMenu(); };
     menu.appendChild(delBtn);
   }
-  // position
   const left = Math.min(window.innerWidth - 220, rect.right + 6);
   const top = rect.bottom + 6;
-  menu.style.left = left + 'px';
-  menu.style.top = top + 'px';
-  document.body.appendChild(menu);
-  activeMenu = menu;
+  menu.style.left = left + 'px'; menu.style.top = top + 'px';
+  document.body.appendChild(menu); activeMenu = menu;
 }
-function closeMenu(){ if(activeMenu){ activeMenu.remove(); activeMenu = null; } }
+function closeMenu(){ if(activeMenu){ activeMenu.remove(); activeMenu=null; } }
 
-/* ======= Message actions ======= */
-function setHidden(msgId, channel, hidden){
+/* ======= Message actions (server or local) ======= */
+async function toggleHidden(msgId, channel, hide){
+  if(usingServer && socket && socket.connected && SERVER_URL){
+    try{
+      // call REST toggle endpoint if available
+      const url = SERVER_URL.replace(/\/$/,'') + `/api/messages/${encodeURIComponent(channel)}/${encodeURIComponent(msgId)}/toggleHidden`;
+      const res = await fetch(url, { method:'POST', headers: { 'Authorization': 'Bearer ' + (token||'') } });
+      if(res.ok){ const json = await res.json(); // server will broadcast message_updated
+        // local update will happen via socket or storage event; but also apply locally
+        const idx = msgIndexById(channel, msgId); if(idx!==-1){ messages[channel][idx] = json.message; saveMessages(); renderMessages(); }
+      } else {
+        throw new Error('toggle failed');
+      }
+      return;
+    } catch(e){ /* fallback to local */ }
+  }
+  // local mode: toggle and broadcast
   const idx = msgIndexById(channel, msgId);
   if(idx === -1) return;
-  messages[channel][idx].hidden = !!hidden;
+  messages[channel][idx].hidden = !!hide;
   saveMessages();
-  // notify other tabs
-  try{ localStorage.setItem('sm_last_broadcast', JSON.stringify({ t: Date.now(), type: 'replace_messages', messages })); }catch(e){}
+  if(usingServer===false) broadcastLocal({ type:'update_message', channel, message: messages[channel][idx] });
   renderMessages();
 }
-function deleteMessage(channel, msgId){
+
+async function deleteMessage(channel, msgId){
+  if(usingServer && socket && socket.connected && SERVER_URL){
+    try{
+      // try REST delete
+      const url = SERVER_URL.replace(/\/$/,'') + `/api/messages/${encodeURIComponent(channel)}/${encodeURIComponent(msgId)}`;
+      const res = await fetch(url, { method:'DELETE', headers: { 'Authorization': 'Bearer ' + (token||'') } });
+      if(res.ok){ /* server broadcasts deletion */ return; }
+      // else try socket delete
+      socket.emit('delete_message', { channel, id: msgId }, (ack)=>{ if(ack && ack.ok) return; });
+    } catch(e){ /* fallback to local */ }
+  }
+  // local delete
   const idx = msgIndexById(channel, msgId);
   if(idx === -1) return;
   const m = messages[channel][idx];
   if(m.user !== currentUser){ alert('Нельзя удалить чужое сообщение'); return; }
-  messages[channel].splice(idx, 1);
+  messages[channel].splice(idx,1);
   saveMessages();
-  try{ localStorage.setItem('sm_last_broadcast', JSON.stringify({ t: Date.now(), type: 'replace_messages', messages })); }catch(e){}
+  if(usingServer===false) broadcastLocal({ type:'delete_message', channel, id: msgId });
   renderMessages();
 }
 
-/* ======= Image attach (message) ======= */
+/* ======= Send message (upload image to server when available) ======= */
 btnAttach.onclick = ()=> imageFile.click();
 imageFile.addEventListener('change', async (e)=>{
   const f = e.target.files && e.target.files[0];
   if(!f) return;
   if(!f.type.startsWith('image/')) { alert('Выберите изображение'); return; }
+  // preview small
   const data = await readFileAsDataURL(f);
-  imgPreview.src = data; imgPreview.style.display = 'block'; imgPreview.dataset.dataurl = data;
+  imgPreview.src = data; imgPreview.style.display = 'block'; imgPreview.dataset.dataurl = data; imageFile._file = f;
 });
 imgPreview.onclick = ()=> { if(confirm('Удалить прикреплённое изображение?')) clearImagePreview(); }
-function clearImagePreview(){ imgPreview.src = ''; imgPreview.style.display='none'; delete imgPreview.dataset.dataurl; imageFile.value = ''; }
+function clearImagePreview(){ imgPreview.src = ''; imgPreview.style.display='none'; delete imgPreview.dataset.dataurl; imageFile.value = ''; imageFile._file = null; }
 
-/* ======= Send message ======= */
-btnSend.onclick = ()=>{
+async function uploadFileToServer(file, field='file'){
+  if(!SERVER_URL) throw new Error('no server');
+  const fd = new FormData(); fd.append(field, file);
+  const url = SERVER_URL.replace(/\/$/,'') + '/api/upload';
+  const res = await fetch(url, { method:'POST', body: fd, headers: { 'Authorization': 'Bearer ' + (token||'') } });
+  if(!res.ok) throw new Error('upload failed');
+  const j = await res.json();
+  return j.url || j;
+}
+
+btnSend.onclick = async ()=>{
   const text = inputMessage.value.trim();
-  const imageData = imgPreview.dataset.dataurl || null;
+  const file = imageFile._file || null;
   if(!currentUser){ alert('Сначала войдите'); return; }
-  if(!text && !imageData) return;
+  if(!text && !file) return;
   const ch = appState.lastChannel || 'general';
   ensureChannel(ch);
-  const msg = createMessageObject(currentUser, text, imageData);
-  messages[ch].push(msg);
-  saveMessages();
-  try{ localStorage.setItem('sm_last_broadcast', JSON.stringify({ t: Date.now(), type: 'new_message', channel: ch, message: msg })); }catch(e){}
-  inputMessage.value = ''; clearImagePreview(); renderMessages();
-};
-inputMessage.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); btnSend.click(); } });
 
-/* ======= Auth / registration / profile ======= */
-async function registerUser(username, password, avatarDataURL){
+  let imageUrl = null;
+  if(file && SERVER_URL && token){
+    try {
+      imageUrl = await uploadFileToServer(file, 'file'); // returns server URL (e.g., /uploads/...)
+      // convert to absolute if server provided relative path
+      if(imageUrl && imageUrl.startsWith('/')) imageUrl = SERVER_URL.replace(/\/$/,'') + imageUrl;
+    } catch(e){
+      // fallback: embed as data URL (local prototype)
+      imageUrl = await readFileAsDataURL(file);
+    }
+  } else if(file) {
+    imageUrl = await readFileAsDataURL(file);
+  }
+
+  // send via server socket if available
+  if(usingServer && socket && socket.connected){
+    socket.emit('new_message', { channel: ch, text, imageUrl }, (ack)=>{
+      if(ack && ack.message){
+        // server will broadcast; but also apply local
+        ensureChannel(ch);
+        if(!messages[ch].some(m=>m.id===ack.message.id)){ messages[ch].push(ack.message); saveMessages(); renderMessages(); }
+      }
+    });
+  } else {
+    // local create and broadcast
+    const msg = createMessageObject(currentUser, text, imageUrl);
+    messages[ch].push(msg);
+    saveMessages();
+    broadcastLocal({ type:'new_message', channel: ch, message: msg });
+    renderMessages();
+  }
+
+  inputMessage.value = ''; clearImagePreview();
+};
+
+/* ======= Auth / register / profile (server-enabled if SERVER_URL set) ======= */
+async function registerUserLocal(username, password, avatarData){
   username = username.trim();
   if(!username || !password) throw 'Введите имя и пароль';
   if(users[username]) throw 'Пользователь уже существует';
   const hash = await sha256Hex(username + '|' + password);
-  users[username] = { hash, createdAt: Date.now(), avatar: avatarDataURL || null };
+  users[username] = { hash, createdAt: Date.now(), avatar: avatarData || null };
   saveUsers();
-  return true;
+  return { username };
 }
-async function loginUser(username, password, remember=false){
+async function loginUserLocal(username, password){
   username = username.trim();
   if(!users[username]) throw 'Пользователь не найден';
   const hash = await sha256Hex(username + '|' + password);
   if(hash !== users[username].hash) throw 'Неверный пароль';
-  currentUser = username;
-  currentUserLabel.textContent = currentUser;
-  currentUserBio.textContent = users[username].avatar ? 'Аватар установлен' : 'Аватар не задан';
-  sidebarAvatar.src = getUserAvatar(currentUser);
-  if(remember){
-    localStorage.setItem('sm_last_user', username);
-    localStorage.setItem('sm_last_hash', hash);
-  } else {
-    localStorage.removeItem('sm_last_user');
-    localStorage.removeItem('sm_last_hash');
-  }
-  authModal.style.display = 'none';
-  renderUsers();
-  renderMessages();
-  renderHeader();
-}
-function tryAutoLogin(){
-  const u = localStorage.getItem('sm_last_user');
-  const h = localStorage.getItem('sm_last_hash');
-  if(u && h && users[u] && users[u].hash === h){
-    currentUser = u;
-    currentUserLabel.textContent = currentUser;
-    currentUserBio.textContent = users[u].avatar ? 'Аватар установлен' : 'Аватар не задан';
-    sidebarAvatar.src = getUserAvatar(currentUser);
-    authModal.style.display = 'none';
-  }
+  return { username };
 }
 
-/* Registration/profile file handlers */
-regAvatarFile.addEventListener('change', async (e)=>{
-  const f = e.target.files && e.target.files[0];
-  if(!f) return;
-  if(!f.type.startsWith('image/')) { alert('Выберите изображение'); regAvatarFile.value=''; return; }
-  // preview not shown in register modal, we read during submit
-});
-profileAvatarFile.addEventListener('change', async (e)=>{
-  const f = e.target.files && e.target.files[0];
-  if(!f){ profileAvatarPreview.src = getUserAvatar(currentUser); return; }
-  if(!f.type.startsWith('image/')) { alert('Выберите изображение'); profileAvatarFile.value=''; return; }
-  const data = await readFileAsDataURL(f);
-  profileAvatarPreview.src = data;
-});
-
-/* Profile open/save/remove */
-btnOpenProfile.onclick = ()=>{
-  if(!currentUser){ alert('Сначала войдите'); return; }
-  profileForm.style.display = 'block';
-  registerForm.style.display = 'none';
-  loginForm.style.display = 'none';
-  profileUserInput.value = currentUser;
-  profileAvatarPreview.src = getUserAvatar(currentUser);
-  authModal.style.display = 'flex';
-};
-btnCloseProfile.onclick = ()=>{ authModal.style.display = 'none'; profileForm.style.display='none'; loginForm.style.display='block'; };
-btnSaveAvatar.onclick = async ()=>{
-  if(!currentUser) return;
-  const f = profileAvatarFile.files && profileAvatarFile.files[0];
-  let data = null;
-  if(f){
-    if(!f.type.startsWith('image/')) { alert('Выберите изображение'); return; }
-    data = await readFileAsDataURL(f);
-  } else {
-    data = profileAvatarPreview.src || null;
-    if(data === DEFAULT_AVATAR) data = null;
-  }
-  users[currentUser].avatar = data;
-  saveUsers();
-  sidebarAvatar.src = getUserAvatar(currentUser);
-  currentUserBio.textContent = data ? 'Аватар установлен' : 'Аватар не задан';
-  renderUsers();
-  alert('Аватар сохранён');
-};
-btnRemoveAvatar.onclick = ()=>{
-  if(!currentUser) return;
-  users[currentUser].avatar = null;
-  saveUsers();
-  sidebarAvatar.src = DEFAULT_AVATAR;
-  profileAvatarPreview.src = DEFAULT_AVATAR;
-  currentUserBio.textContent = 'Аватар не задан';
-  renderUsers();
-  alert('Аватар удалён');
-};
-
-/* ======= Storage sync from other tabs (basic) ======= */
-window.addEventListener('storage', (ev)=>{
-  if(ev.key === USERS_KEY && ev.newValue){ try{ users = JSON.parse(ev.newValue); renderUsers(); }catch(e){} }
-  if(ev.key === MESSAGES_KEY && ev.newValue){ try{ messages = JSON.parse(ev.newValue); renderMessages(); }catch(e){} }
-  if(ev.key === 'sm_last_broadcast' && ev.newValue){
-    try{
-      const env = JSON.parse(ev.newValue);
-      if(!env) return;
-      if(env.type === 'new_message' && env.channel && env.message){
-        ensureChannel(env.channel);
-        if(!messages[env.channel].some(x=>x.id===env.message.id)){
-          messages[env.channel].push(env.message);
-          saveMessages();
-          renderMessages();
-          renderUsers();
-        }
-      } else if(env.type === 'replace_messages' && env.messages){
-        messages = env.messages; saveMessages(); renderMessages(); renderUsers();
-      }
-    }catch(e){}
-  }
-});
-
-/* ======= UI wiring and init ======= */
-qs('toRegister').onclick = (e)=>{ e.preventDefault(); loginForm.style.display='none'; registerForm.style.display='block'; profileForm.style.display='none'; qs('authTitle').textContent='Регистрация'; }
-qs('toLogin').onclick = (e)=>{ e.preventDefault(); loginForm.style.display='block'; registerForm.style.display='none'; profileForm.style.display='none'; qs('authTitle').textContent='Вход / Регистрация'; }
-btnRegister.onclick = async ()=>{
+async function registerHandler(){
   try{
     const u = qs('regUser').value.trim();
     const p = qs('regPass').value;
@@ -583,40 +617,171 @@ btnRegister.onclick = async ()=>{
     let avatarData = null;
     const f = regAvatarFile.files && regAvatarFile.files[0];
     if(f){
-      if(!f.type.startsWith('image/')) { qs('regMsg').textContent = 'Файл не изображение'; return; }
+      if(!f.type.startsWith('image/')){ qs('regMsg').textContent = 'Файл не изображение'; return; }
+      if(SERVER_URL){
+        // upload avatar to server
+        try{
+          const fd = new FormData(); fd.append('avatar', f);
+          const url = SERVER_URL.replace(/\/$/,'') + '/api/register';
+          // server expects username/password form fields; use fetch with form (server example: register endpoint used earlier expects multipart)
+          fd.append('username', u); fd.append('password', p);
+          const res = await fetch(url, { method: 'POST', body: fd });
+          if(!res.ok){ const j = await res.json().catch(()=>{}); qs('regMsg').textContent = j && j.error ? j.error : 'Регистрация не удалась'; return; }
+          const j = await res.json();
+          // server returns token and user
+          saveToken(j.token);
+          users[j.user.username] = users[j.user.username] || { hash: null, createdAt: Date.now(), avatar: j.user.avatarUrl || null };
+          saveUsers();
+          qs('regMsg').textContent = 'Готово. Выполнен вход.';
+          // finish login
+          await postLogin(j.user.username, j.token);
+          return;
+        }catch(err){
+          qs('regMsg').textContent = 'Ошибка регистрации на сервере, пробую локально';
+        }
+      }
       avatarData = await readFileAsDataURL(f);
     }
-    await registerUser(u,p,avatarData);
-    qs('regMsg').textContent = 'Готово. Теперь войдите.';
+    // local register
+    await registerUserLocal(u,p,avatarData);
+    qs('regMsg').textContent = 'Готово. Теперь войдите (локально).';
     loginForm.style.display='block'; registerForm.style.display='none'; qs('authTitle').textContent='Вход / Регистрация';
     qs('loginUser').value = u;
-    saveUsers();
   }catch(err){ qs('regMsg').textContent = String(err); }
-};
-btnLogin.onclick = async ()=>{
+}
+
+async function loginHandler(){
   try{
     const u = qs('loginUser').value.trim();
     const p = qs('loginPass').value;
-    const rem = rememberCheck.checked;
-    await loginUser(u,p,rem);
-    sidebarAvatar.src = getUserAvatar(u);
+    if(SERVER_URL){
+      try{
+        const res = await fetch(SERVER_URL.replace(/\/$/,'') + '/api/login', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify({ username: u, password: p }) });
+        if(!res.ok){ const j = await res.json().catch(()=>{}); throw new Error(j && j.error ? j.error : 'Ошибка входа'); }
+        const j = await res.json();
+        await postLogin(j.user.username, j.token);
+        return;
+      }catch(e){
+        // fallback to local
+      }
+    }
+    const r = await loginUserLocal(u,p);
+    await postLogin(r.username, null);
   }catch(err){ alert(String(err)); }
-};
-btnLogout.onclick = ()=>{ currentUser = null; currentUserLabel.textContent = '—'; currentUserBio.textContent = '—'; sidebarAvatar.src = DEFAULT_AVATAR; authModal.style.display = 'flex'; };
+}
 
-/* time display */
+async function postLogin(username, newToken){
+  currentUser = username;
+  saveToken(newToken || null);
+  currentUserLabel.textContent = currentUser;
+  currentUserBio.textContent = users[currentUser] && users[currentUser].avatar ? 'Аватар установлен' : 'Аватар не задан';
+  sidebarAvatar.src = getUserAvatar(currentUser);
+  authModal.style.display = 'none';
+  renderUsers();
+  renderMessages();
+  renderHeader();
+  // connect realtime after login if server configured
+  if(SERVER_URL){ await connectRealtime(); }
+}
+
+/* Profile handlers (update avatar) */
+regAvatarFile.addEventListener('change', async ()=>{ /* noop; handled on submit */ });
+profileAvatarFile.addEventListener('change', async (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if(!f) return;
+  if(!f.type.startsWith('image/')) { alert('Выберите изображение'); profileAvatarFile.value=''; return; }
+  const data = await readFileAsDataURL(f);
+  profileAvatarPreview.src = data;
+});
+
+btnOpenProfile.onclick = ()=>{
+  if(!currentUser){ alert('Сначала войдите'); return; }
+  profileForm.style.display = 'block'; registerForm.style.display='none'; loginForm.style.display='none';
+  profileUserInput.value = currentUser;
+  profileAvatarPreview.src = getUserAvatar(currentUser);
+  authModal.style.display = 'flex';
+};
+btnCloseProfile.onclick = ()=>{ authModal.style.display = 'none'; profileForm.style.display='none'; loginForm.style.display='block'; };
+
+btnSaveAvatar.onclick = async ()=>{
+  if(!currentUser) return;
+  const f = profileAvatarFile.files && profileAvatarFile.files[0];
+  let data = null;
+  if(f && SERVER_URL && token){
+    try{
+      // upload to server
+      const fd = new FormData(); fd.append('avatar', f);
+      const res = await fetch(SERVER_URL.replace(/\/$/,'') + '/api/avatar', { method:'POST', body: fd, headers: { 'Authorization': 'Bearer ' + (token||'') } });
+      if(res.ok){ const j = await res.json(); const avatarUrl = j.avatarUrl || j; // may be relative
+        // make absolute if starts with '/'
+        const abs = avatarUrl.startsWith('/') ? SERVER_URL.replace(/\/$/,'') + avatarUrl : avatarUrl;
+        users[currentUser].avatar = abs;
+        saveUsers();
+        sidebarAvatar.src = getUserAvatar(currentUser);
+        renderUsers();
+        alert('Аватар сохранён на сервере');
+        return;
+      }
+    }catch(e){}
+  }
+  if(f){
+    data = await readFileAsDataURL(f);
+    users[currentUser].avatar = data;
+    saveUsers(); sidebarAvatar.src = getUserAvatar(currentUser); renderUsers(); alert('Аватар сохранён (локально)');
+  } else {
+    const preview = profileAvatarPreview.src;
+    if(preview && preview !== DEFAULT_AVATAR){ users[currentUser].avatar = preview; saveUsers(); sidebarAvatar.src = getUserAvatar(currentUser); renderUsers(); alert('Аватар сохранён (локально)'); }
+  }
+};
+btnRemoveAvatar.onclick = ()=>{
+  if(!currentUser) return;
+  users[currentUser].avatar = null; saveUsers(); sidebarAvatar.src = DEFAULT_AVATAR; profileAvatarPreview.src = DEFAULT_AVATAR; renderUsers(); alert('Аватар удалён');
+};
+
+/* ======= Storage sync (local fallback) ======= */
+window.addEventListener('storage', (ev)=>{
+  if(ev.key === USERS_KEY && ev.newValue){ try{ users = JSON.parse(ev.newValue); renderUsers(); }catch(e){} }
+  if(ev.key === MESSAGES_KEY && ev.newValue){ try{ messages = JSON.parse(ev.newValue); renderMessages(); }catch(e){} }
+  if(ev.key === 'sm_last_broadcast_v3' && ev.newValue){
+    try{ const env = JSON.parse(ev.newValue); handleLocalBroadcast(env); }catch(e){} }
+});
+
+/* ======= UI wiring and init ======= */
+qs('toRegister').onclick = (e)=>{ e.preventDefault(); loginForm.style.display='none'; registerForm.style.display='block'; profileForm.style.display='none'; qs('authTitle').textContent='Регистрация'; }
+qs('toLogin').onclick = (e)=>{ e.preventDefault(); loginForm.style.display='block'; registerForm.style.display='none'; profileForm.style.display='none'; qs('authTitle').textContent='Вход / Регистрация'; }
+btnRegister.onclick = registerHandler;
+btnLogin.onclick = loginHandler;
+btnLogout.onclick = ()=>{ currentUser = null; currentUserLabel.textContent = '—'; currentUserBio.textContent = '—'; sidebarAvatar.src = DEFAULT_AVATAR; saveToken(null); authModal.style.display = 'flex'; };
+
 setInterval(()=>{ serverTime.textContent = new Date().toLocaleTimeString(); }, 1000);
 
 /* startup */
-(function init(){
+(async function init(){
   CHANNELS.forEach(c=>{ if(!messages[c.id]) messages[c.id]=[]; });
   saveMessages(); saveUsers(); saveApp();
   renderChannels(); renderUsers(); renderHeader();
-  tryAutoLogin();
+  // auto-login if token and SERVER_URL -> try to fetch user info (assuming server supports token introspect via /api/me optional)
+  if(token && SERVER_URL){
+    try{
+      // try fetching user identity using token via /api/me (if server supports) or by requesting /api/messages to get user list
+      // fallback: try to decode token with basic base64 (not secure). We'll just attempt to connect socket with token and request nothing.
+      await connectRealtime();
+      // if socket connected and server provides user details via /api/me, you'd fetch here. For now, show logged-in from token presence if local users unknown
+      const lastUser = localStorage.getItem('sm_last_user_v3');
+      if(lastUser) { currentUser = lastUser; currentUserLabel.textContent = currentUser; sidebarAvatar.src = getUserAvatar(currentUser); authModal.style.display='none'; }
+    }catch(e){}
+  } else {
+    // try local remembered user
+    const u = localStorage.getItem('sm_last_user_v3');
+    if(u && users[u]){ currentUser = u; currentUserLabel.textContent = currentUser; sidebarAvatar.src = getUserAvatar(currentUser); authModal.style.display='none'; }
+  }
   if(!currentUser) authModal.style.display = 'flex'; else authModal.style.display = 'none';
-  sidebarAvatar.src = currentUser ? getUserAvatar(currentUser) : DEFAULT_AVATAR;
+  // start realtime (local or server) after init
+  await connectRealtime();
   setTimeout(renderMessages, 60);
 })();
+
+/* =================== END =================== */
 </script>
 </body>
 </html>
