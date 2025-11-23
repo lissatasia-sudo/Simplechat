@@ -1,0 +1,622 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SimpleMessenger — аватарки</title>
+<style>
+  :root{--bg:#0f1724;--panel:#0b1220;--accent:#5865f2;--muted:#98a0b3;--msg:#e6eef8;--self:#2f9a4a;--danger:#e04b4b}
+  *{box-sizing:border-box;font-family:Inter,system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+  html,body{height:100%;margin:0;background:linear-gradient(180deg,#071021 0%,var(--bg) 100%);color:var(--msg)}
+  .app{display:flex;height:100vh;gap:16px;padding:18px}
+  .sidebar{width:300px;background:var(--panel);border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:12px}
+  .brand{font-weight:700;color:var(--accent);font-size:18px}
+  .channels,.users{background:rgba(255,255,255,0.02);padding:8px;border-radius:8px;max-height:180px;overflow:auto}
+  .user-row{display:flex;align-items:center;gap:8px;padding:6px;border-radius:6px}
+  .avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;border:1px solid rgba(255,255,255,0.04)}
+  .channel{padding:8px;border-radius:6px;cursor:pointer;color:var(--muted)}
+  .channel.active{background:rgba(88,101,242,0.12);color:var(--msg);font-weight:600}
+  .main{flex:1;display:flex;flex-direction:column;gap:12px}
+  .header{background:var(--panel);padding:12px;border-radius:10px;display:flex;justify-content:space-between;align-items:center}
+  .chat{flex:1;background:var(--panel);padding:12px;border-radius:10px;display:flex;flex-direction:column;gap:10px;overflow:auto}
+  .messages{display:flex;flex-direction:column;gap:8px}
+  .msg-row{display:flex;align-items:flex-start;gap:8px;position:relative}
+  .msg{max-width:70%;padding:8px 10px;border-radius:8px;background:rgba(255,255,255,0.03);color:var(--msg);position:relative}
+  .msg.me{margin-left:auto;background:linear-gradient(90deg,var(--self),#36b36a);color:#fff}
+  .msg.hidden{opacity:0.85;background:rgba(255,255,255,0.02);font-style:italic;color:var(--muted)}
+  .composer{display:flex;gap:8px;align-items:center}
+  input[type="text"],input[type="password"],textarea{background:#071827;border:1px solid rgba(255,255,255,0.03);color:var(--msg);padding:10px;border-radius:8px;outline:none;width:100%}
+  button{background:var(--accent);color:#fff;padding:8px 12px;border:0;border-radius:8px;cursor:pointer}
+  .muted{color:var(--muted);font-size:13px}
+  .auth{position:fixed;inset:0;background:rgba(2,6,12,0.6);display:flex;align-items:center;justify-content:center}
+  .card{background:linear-gradient(180deg,#071426,#061021);padding:18px;border-radius:12px;width:520px;box-shadow:0 10px 30px rgba(2,6,20,0.5)}
+  label{display:block;font-size:13px;margin-bottom:6px;color:var(--muted)}
+  .row{display:flex;gap:8px}
+  .small{font-size:13px}
+  .channels .channel:hover{background:rgba(255,255,255,0.02)}
+  footer{color:var(--muted);font-size:12px;text-align:center;margin-top:8px}
+  .msg-img{max-width:320px;border-radius:8px;display:block;margin-top:8px;cursor:pointer;border:1px solid rgba(255,255,255,0.04)}
+  a.msg-link{color: #9ec1ff; text-decoration:underline; word-break:break-all}
+  .img-preview{max-height:56px;max-width:56px;border-radius:6px;object-fit:cover;margin-right:8px;border:1px solid rgba(255,255,255,0.04)}
+  .compose-left{display:flex;align-items:center;gap:8px}
+  .three-dots{background:transparent;border:0;color:var(--muted);cursor:pointer;font-size:18px;padding:4px;border-radius:6px}
+  .three-dots:hover{background:rgba(255,255,255,0.02);color:var(--msg)}
+  .menu{position:fixed;z-index:999;background:linear-gradient(180deg,#081223,#071018);border:1px solid rgba(255,255,255,0.04);padding:6px;border-radius:8px;min-width:170px;box-shadow:0 6px 18px rgba(2,6,20,0.6)}
+  .menu button{display:block;text-align:left;width:100%;background:transparent;color:var(--msg);padding:8px;border-radius:6px;border:0;cursor:pointer}
+  .menu button:hover{background:rgba(255,255,255,0.02)}
+  .menu .danger{color:var(--danger)}
+  .placeholder-hidden{padding:10px 12px;border-radius:8px;background:rgba(255,255,255,0.01);color:var(--muted);font-size:14px}
+  .msg-meta{font-size:13px;color:var(--muted);margin-bottom:6px}
+  .profile-actions{display:flex;gap:8px;align-items:center;margin-top:8px}
+  .small-muted{font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand">SimpleMessenger</div>
+    <div class="muted">Текущий пользователь:</div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <img id="sidebarAvatar" class="avatar" src="" alt="avatar"/>
+      <div><div id="currentUser" class="small">—</div><div id="currentUserBio" class="small-muted">—</div></div>
+    </div>
+
+    <div>
+      <div class="muted" style="margin-bottom:6px">Каналы</div>
+      <div id="channels" class="channels"></div>
+    </div>
+    <div>
+      <div class="muted" style="margin-bottom:6px">Пользователи</div>
+      <div id="users" class="users"></div>
+    </div>
+    <div style="margin-top:auto">
+      <button id="btnOpenProfile">Профиль</button>
+      <button id="btnLogout" style="background:#2b2b2b;margin-top:8px">Выйти</button>
+    </div>
+  </aside>
+
+  <main class="main">
+    <div class="header">
+      <div>
+        <div id="channelTitle">#general</div>
+        <div class="muted small" id="channelDesc">Общий канал</div>
+      </div>
+      <div class="muted small" id="serverTime"></div>
+    </div>
+
+    <div class="chat">
+      <div class="messages" id="messages"></div>
+    </div>
+
+    <div class="composer">
+      <div class="compose-left">
+        <input id="imageFile" type="file" accept="image/*" style="display:none" />
+        <img id="imgPreview" class="img-preview" style="display:none" alt="preview" />
+        <button id="btnAttach" title="Прикрепить изображение">📎</button>
+      </div>
+      <input id="inputMessage" type="text" placeholder="Напишите сообщение или вставьте ссылку..." />
+      <button id="btnSend">Отправить</button>
+    </div>
+    <footer>Локальный прототип. Для пользователей без аватарки используется встроенная заглушка.</footer>
+  </main>
+</div>
+
+<!-- Модал аутентификации / профиль -->
+<div id="auth" class="auth">
+  <div class="card">
+    <h3 id="authTitle">Вход / Регистрация</h3>
+    <div id="forms">
+      <div id="loginForm">
+        <label>Имя пользователя
+          <input id="loginUser" type="text" />
+        </label>
+        <label>Пароль
+          <input id="loginPass" type="password" />
+        </label>
+        <div class="row" style="align-items:center;margin-top:8px">
+          <label style="flex:1"><input id="rememberMe" type="checkbox" /> <span class="small muted">Запомнить меня</span></label>
+          <button id="btnLogin">Войти</button>
+        </div>
+        <div style="margin-top:8px" class="muted small">Еще не зарегистрированы? <a href="#" id="toRegister">Создать аккаунт</a></div>
+      </div>
+
+      <div id="registerForm" style="display:none">
+        <label>Имя пользователя
+          <input id="regUser" type="text" />
+        </label>
+        <label>Пароль
+          <input id="regPass" type="password" />
+        </label>
+        <label>Подтвердите пароль
+          <input id="regPass2" type="password" />
+        </label>
+
+        <label>Аватар (опционально)
+          <input id="regAvatarFile" type="file" accept="image/*" />
+        </label>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="btnRegister">Зарегистрировать</button>
+          <button id="toLogin" style="background:#2b2b2b">Назад</button>
+        </div>
+        <div id="regMsg" class="muted small" style="margin-top:8px"></div>
+      </div>
+
+      <div id="profileForm" style="display:none">
+        <label>Имя пользователя
+          <input id="profileUser" type="text" disabled />
+        </label>
+        <label>Аватар
+          <div style="display:flex;align-items:center;gap:8px">
+            <img id="profileAvatarPreview" class="avatar" src="" alt="preview"/>
+            <div>
+              <input id="profileAvatarFile" type="file" accept="image/*" />
+              <div class="profile-actions">
+                <button id="btnSaveAvatar">Сохранить</button>
+                <button id="btnRemoveAvatar" style="background:#2b2b2b">Удалить</button>
+              </div>
+            </div>
+          </div>
+        </label>
+        <div style="display:flex;gap:8px;margin-top:8px">
+          <button id="btnCloseProfile" style="background:#2b2b2b">Закрыть</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+/* ======= Utilities ======= */
+async function sha256Hex(str){
+  const enc = new TextEncoder().encode(str);
+  const hash = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(hash)).map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function qs(id){return document.getElementById(id)}
+function escapeHtml(s){ return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;') }
+
+/* ======= Placeholder avatar (SVG data URL) ======= */
+const DEFAULT_AVATAR = (()=>{
+  const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='128' height='128' viewBox='0 0 24 24' fill='none'><rect width='24' height='24' rx='4' fill='%233a3f47'/><path d='M12 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 2c-3.3 0-6 1.7-6 3v1h12v-1c0-1.3-2.7-3-6-3z' fill='%23fff' opacity='0.92'/></svg>`;
+  return 'data:image/svg+xml;base64,' + btoa(svg);
+})();
+
+/* ======= Storage keys ======= */
+const USERS_KEY = 'sm_users_v2';
+const MESSAGES_KEY = 'sm_messages_v2';
+const APP_KEY = 'sm_app_v2';
+
+function loadJSON(k, fallback){ try{ const v=localStorage.getItem(k); return v?JSON.parse(v):fallback }catch(e){return fallback} }
+function saveJSON(k,v){ localStorage.setItem(k, JSON.stringify(v)) }
+
+/* ======= State ======= */
+let users = loadJSON(USERS_KEY, {}); // users: { username: { hash, createdAt, avatar (dataURL|null) } }
+let messages = loadJSON(MESSAGES_KEY, { general: [] });
+let appState = loadJSON(APP_KEY, { lastChannel: 'general' });
+let currentUser = null;
+
+/* ======= UI refs ======= */
+const authModal = qs('auth');
+const loginForm = qs('loginForm');
+const registerForm = qs('registerForm');
+const profileForm = qs('profileForm');
+const btnLogin = qs('btnLogin');
+const btnRegister = qs('btnRegister');
+const btnLogout = qs('btnLogout');
+const btnSend = qs('btnSend');
+const inputMessage = qs('inputMessage');
+const messagesWrap = qs('messages');
+const channelsWrap = qs('channels');
+const usersWrap = qs('users');
+const currentUserLabel = qs('currentUser');
+const currentUserBio = qs('currentUserBio');
+const sidebarAvatar = qs('sidebarAvatar');
+const channelTitle = qs('channelTitle');
+const serverTime = qs('serverTime');
+const rememberCheck = qs('rememberMe');
+
+const imageFile = qs('imageFile');
+const btnAttach = qs('btnAttach');
+const imgPreview = qs('imgPreview');
+
+const regAvatarFile = qs('regAvatarFile');
+const profileAvatarFile = qs('profileAvatarFile');
+const profileAvatarPreview = qs('profileAvatarPreview');
+const profileUserInput = qs('profileUser');
+
+const btnOpenProfile = qs('btnOpenProfile');
+const btnCloseProfile = qs('btnCloseProfile');
+const btnSaveAvatar = qs('btnSaveAvatar');
+const btnRemoveAvatar = qs('btnRemoveAvatar');
+
+/* ======= Channels ======= */
+const CHANNELS = [
+  {id:'general', name:'#general', desc:'Общий канал'},
+  {id:'random', name:'#random', desc:'Болталка и мемы'},
+  {id:'dev', name:'#dev', desc:'Обсуждение разработки'}
+];
+
+/* ======= Linkify ======= */
+function linkify(text){
+  const urlRegex = /((https?:\/\/|www\.)[^\s<>"']+)/gi;
+  return escapeHtml(text).replace(urlRegex, (m)=>{
+    let url = m;
+    if(!/^https?:\/\//i.test(url)) url = 'http://' + url;
+    return `<a class="msg-link" href="${url}" target="_blank" rel="noopener noreferrer">${escapeHtml(m)}</a>`;
+  });
+}
+
+/* ======= Helpers ======= */
+function ensureChannel(ch){ if(!messages[ch]) messages[ch]=[]; }
+function saveMessages(){ saveJSON(MESSAGES_KEY, messages); }
+function saveUsers(){ saveJSON(USERS_KEY, users); }
+function saveApp(){ saveJSON(APP_KEY, appState); }
+
+function randomSuffix(){ return Math.random().toString(36).slice(2,9); }
+function createMessageObject(user, text, image){
+  const ts = Date.now();
+  return { id: `${ts}-${randomSuffix()}`, user, text: text||'', image: image||null, ts, hidden: false };
+}
+function msgIndexById(channel, id){ ensureChannel(channel); return messages[channel].findIndex(m=>m.id===id); }
+
+/* ======= Avatar utilities ======= */
+function getUserAvatar(username){
+  if(!username) return DEFAULT_AVATAR;
+  const u = users[username];
+  return (u && u.avatar) ? u.avatar : DEFAULT_AVATAR;
+}
+function readFileAsDataURL(file){
+  return new Promise((res, rej)=>{
+    const r = new FileReader();
+    r.onload = ()=> res(r.result);
+    r.onerror = ()=> rej(new Error('File read error'));
+    r.readAsDataURL(file);
+  });
+}
+
+/* ======= Render UI ======= */
+function renderChannels(){
+  channelsWrap.innerHTML = '';
+  CHANNELS.forEach(ch=>{
+    const div = document.createElement('div');
+    div.className = 'channel' + (appState.lastChannel===ch.id? ' active':'');
+    div.textContent = ch.name;
+    div.onclick = ()=>{ appState.lastChannel = ch.id; saveApp(); renderChannels(); renderMessages(); renderHeader(); };
+    channelsWrap.appendChild(div);
+  });
+}
+function renderUsers(){
+  usersWrap.innerHTML = '';
+  const list = Object.keys(users);
+  if(list.length===0){ usersWrap.textContent = 'Пока нет пользователей'; return; }
+  list.forEach(u=>{
+    const row = document.createElement('div');
+    row.className = 'user-row';
+    const img = document.createElement('img');
+    img.className = 'avatar';
+    img.src = getUserAvatar(u);
+    img.alt = u;
+    const name = document.createElement('div');
+    name.textContent = u;
+    row.appendChild(img);
+    row.appendChild(name);
+    usersWrap.appendChild(row);
+  });
+}
+function formatTime(ts){ const d=new Date(ts); return d.toLocaleTimeString(); }
+
+/* Close menus on click outside */
+let activeMenu = null;
+document.addEventListener('click', (e)=>{ if(activeMenu && !activeMenu.contains(e.target)) { activeMenu.remove(); activeMenu = null; } });
+
+/* Render messages including avatar */
+function renderMessages(){
+  const ch = appState.lastChannel || 'general';
+  ensureChannel(ch);
+  const list = messages[ch] || [];
+  messagesWrap.innerHTML = '';
+  list.forEach(m=>{
+    const row = document.createElement('div'); row.className = 'msg-row';
+    // avatar
+    const avatar = document.createElement('img'); avatar.className = 'avatar'; avatar.src = getUserAvatar(m.user); avatar.alt = m.user;
+    // message block
+    const el = document.createElement('div');
+    el.className = 'msg' + (m.user===currentUser? ' me':'') + (m.hidden? ' hidden':'');
+    el.dataset.msgId = m.id;
+    el.dataset.channel = ch;
+
+    const meta = document.createElement('div'); meta.className = 'msg-meta'; meta.textContent = m.user + ' • ' + formatTime(m.ts);
+    el.appendChild(meta);
+
+    if(m.hidden){
+      const ph = document.createElement('div'); ph.className = 'placeholder-hidden'; ph.textContent = 'Сообщение скрыто';
+      el.appendChild(ph);
+    } else {
+      if(m.text){
+        const t = document.createElement('div'); t.style.marginTop='6px'; t.innerHTML = linkify(m.text); el.appendChild(t);
+      }
+      if(m.image){
+        const img = document.createElement('img'); img.src = m.image; img.className = 'msg-img'; img.alt = 'image';
+        img.onclick = ()=> window.open(m.image, '_blank', 'noopener'); el.appendChild(img);
+      }
+    }
+
+    // three dots button
+    const btn = document.createElement('button'); btn.className = 'three-dots'; btn.innerText = '⋯';
+    btn.title = 'Меню сообщения';
+    btn.dataset.msgId = m.id;
+    btn.dataset.channel = ch;
+    btn.onclick = (e)=>{ e.stopPropagation(); openMessageMenu(e.currentTarget, m, ch); };
+
+    // append (avatar left for others, right for own)
+    if(m.user === currentUser){
+      // own message aligned right: element then avatar
+      row.appendChild(el);
+      row.appendChild(avatar);
+      row.appendChild(btn);
+    } else {
+      row.appendChild(avatar);
+      row.appendChild(el);
+      row.appendChild(btn);
+    }
+    messagesWrap.appendChild(row);
+  });
+  messagesWrap.scrollTop = messagesWrap.scrollHeight;
+}
+
+function renderHeader(){
+  const ch = CHANNELS.find(c=>c.id===appState.lastChannel) || CHANNELS[0];
+  channelTitle.textContent = ch.name;
+  qs('channelDesc').textContent = ch.desc;
+}
+
+/* ======= Message menu (delete / hide) ======= */
+function openMessageMenu(button, message, channel){
+  if(activeMenu){ activeMenu.remove(); activeMenu = null; }
+  const rect = button.getBoundingClientRect();
+  const menu = document.createElement('div'); menu.className = 'menu';
+  // options
+  if(message.hidden){
+    const showBtn = document.createElement('button'); showBtn.textContent = 'Показать сообщение';
+    showBtn.onclick = (ev)=>{ ev.stopPropagation(); setHidden(message.id, channel, false); closeMenu(); };
+    menu.appendChild(showBtn);
+  } else {
+    const hideBtn = document.createElement('button'); hideBtn.textContent = 'Скрыть сообщение';
+    hideBtn.onclick = (ev)=>{ ev.stopPropagation(); setHidden(message.id, channel, true); closeMenu(); };
+    menu.appendChild(hideBtn);
+  }
+  if(message.user === currentUser){
+    const delBtn = document.createElement('button'); delBtn.textContent = 'Удалить сообщение'; delBtn.className='danger';
+    delBtn.onclick = (ev)=>{ ev.stopPropagation(); if(confirm('Удалить сообщение?')) { deleteMessage(channel, message.id); } closeMenu(); };
+    menu.appendChild(delBtn);
+  }
+  // position
+  const left = Math.min(window.innerWidth - 220, rect.right + 6);
+  const top = rect.bottom + 6;
+  menu.style.left = left + 'px';
+  menu.style.top = top + 'px';
+  document.body.appendChild(menu);
+  activeMenu = menu;
+}
+function closeMenu(){ if(activeMenu){ activeMenu.remove(); activeMenu = null; } }
+
+/* ======= Message actions ======= */
+function setHidden(msgId, channel, hidden){
+  const idx = msgIndexById(channel, msgId);
+  if(idx === -1) return;
+  messages[channel][idx].hidden = !!hidden;
+  saveMessages();
+  // notify other tabs
+  try{ localStorage.setItem('sm_last_broadcast', JSON.stringify({ t: Date.now(), type: 'replace_messages', messages })); }catch(e){}
+  renderMessages();
+}
+function deleteMessage(channel, msgId){
+  const idx = msgIndexById(channel, msgId);
+  if(idx === -1) return;
+  const m = messages[channel][idx];
+  if(m.user !== currentUser){ alert('Нельзя удалить чужое сообщение'); return; }
+  messages[channel].splice(idx, 1);
+  saveMessages();
+  try{ localStorage.setItem('sm_last_broadcast', JSON.stringify({ t: Date.now(), type: 'replace_messages', messages })); }catch(e){}
+  renderMessages();
+}
+
+/* ======= Image attach (message) ======= */
+btnAttach.onclick = ()=> imageFile.click();
+imageFile.addEventListener('change', async (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if(!f) return;
+  if(!f.type.startsWith('image/')) { alert('Выберите изображение'); return; }
+  const data = await readFileAsDataURL(f);
+  imgPreview.src = data; imgPreview.style.display = 'block'; imgPreview.dataset.dataurl = data;
+});
+imgPreview.onclick = ()=> { if(confirm('Удалить прикреплённое изображение?')) clearImagePreview(); }
+function clearImagePreview(){ imgPreview.src = ''; imgPreview.style.display='none'; delete imgPreview.dataset.dataurl; imageFile.value = ''; }
+
+/* ======= Send message ======= */
+btnSend.onclick = ()=>{
+  const text = inputMessage.value.trim();
+  const imageData = imgPreview.dataset.dataurl || null;
+  if(!currentUser){ alert('Сначала войдите'); return; }
+  if(!text && !imageData) return;
+  const ch = appState.lastChannel || 'general';
+  ensureChannel(ch);
+  const msg = createMessageObject(currentUser, text, imageData);
+  messages[ch].push(msg);
+  saveMessages();
+  try{ localStorage.setItem('sm_last_broadcast', JSON.stringify({ t: Date.now(), type: 'new_message', channel: ch, message: msg })); }catch(e){}
+  inputMessage.value = ''; clearImagePreview(); renderMessages();
+};
+inputMessage.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ e.preventDefault(); btnSend.click(); } });
+
+/* ======= Auth / registration / profile ======= */
+async function registerUser(username, password, avatarDataURL){
+  username = username.trim();
+  if(!username || !password) throw 'Введите имя и пароль';
+  if(users[username]) throw 'Пользователь уже существует';
+  const hash = await sha256Hex(username + '|' + password);
+  users[username] = { hash, createdAt: Date.now(), avatar: avatarDataURL || null };
+  saveUsers();
+  return true;
+}
+async function loginUser(username, password, remember=false){
+  username = username.trim();
+  if(!users[username]) throw 'Пользователь не найден';
+  const hash = await sha256Hex(username + '|' + password);
+  if(hash !== users[username].hash) throw 'Неверный пароль';
+  currentUser = username;
+  currentUserLabel.textContent = currentUser;
+  currentUserBio.textContent = users[username].avatar ? 'Аватар установлен' : 'Аватар не задан';
+  sidebarAvatar.src = getUserAvatar(currentUser);
+  if(remember){
+    localStorage.setItem('sm_last_user', username);
+    localStorage.setItem('sm_last_hash', hash);
+  } else {
+    localStorage.removeItem('sm_last_user');
+    localStorage.removeItem('sm_last_hash');
+  }
+  authModal.style.display = 'none';
+  renderUsers();
+  renderMessages();
+  renderHeader();
+}
+function tryAutoLogin(){
+  const u = localStorage.getItem('sm_last_user');
+  const h = localStorage.getItem('sm_last_hash');
+  if(u && h && users[u] && users[u].hash === h){
+    currentUser = u;
+    currentUserLabel.textContent = currentUser;
+    currentUserBio.textContent = users[u].avatar ? 'Аватар установлен' : 'Аватар не задан';
+    sidebarAvatar.src = getUserAvatar(currentUser);
+    authModal.style.display = 'none';
+  }
+}
+
+/* Registration/profile file handlers */
+regAvatarFile.addEventListener('change', async (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if(!f) return;
+  if(!f.type.startsWith('image/')) { alert('Выберите изображение'); regAvatarFile.value=''; return; }
+  // preview not shown in register modal, we read during submit
+});
+profileAvatarFile.addEventListener('change', async (e)=>{
+  const f = e.target.files && e.target.files[0];
+  if(!f){ profileAvatarPreview.src = getUserAvatar(currentUser); return; }
+  if(!f.type.startsWith('image/')) { alert('Выберите изображение'); profileAvatarFile.value=''; return; }
+  const data = await readFileAsDataURL(f);
+  profileAvatarPreview.src = data;
+});
+
+/* Profile open/save/remove */
+btnOpenProfile.onclick = ()=>{
+  if(!currentUser){ alert('Сначала войдите'); return; }
+  profileForm.style.display = 'block';
+  registerForm.style.display = 'none';
+  loginForm.style.display = 'none';
+  profileUserInput.value = currentUser;
+  profileAvatarPreview.src = getUserAvatar(currentUser);
+  authModal.style.display = 'flex';
+};
+btnCloseProfile.onclick = ()=>{ authModal.style.display = 'none'; profileForm.style.display='none'; loginForm.style.display='block'; };
+btnSaveAvatar.onclick = async ()=>{
+  if(!currentUser) return;
+  const f = profileAvatarFile.files && profileAvatarFile.files[0];
+  let data = null;
+  if(f){
+    if(!f.type.startsWith('image/')) { alert('Выберите изображение'); return; }
+    data = await readFileAsDataURL(f);
+  } else {
+    data = profileAvatarPreview.src || null;
+    if(data === DEFAULT_AVATAR) data = null;
+  }
+  users[currentUser].avatar = data;
+  saveUsers();
+  sidebarAvatar.src = getUserAvatar(currentUser);
+  currentUserBio.textContent = data ? 'Аватар установлен' : 'Аватар не задан';
+  renderUsers();
+  alert('Аватар сохранён');
+};
+btnRemoveAvatar.onclick = ()=>{
+  if(!currentUser) return;
+  users[currentUser].avatar = null;
+  saveUsers();
+  sidebarAvatar.src = DEFAULT_AVATAR;
+  profileAvatarPreview.src = DEFAULT_AVATAR;
+  currentUserBio.textContent = 'Аватар не задан';
+  renderUsers();
+  alert('Аватар удалён');
+};
+
+/* ======= Storage sync from other tabs (basic) ======= */
+window.addEventListener('storage', (ev)=>{
+  if(ev.key === USERS_KEY && ev.newValue){ try{ users = JSON.parse(ev.newValue); renderUsers(); }catch(e){} }
+  if(ev.key === MESSAGES_KEY && ev.newValue){ try{ messages = JSON.parse(ev.newValue); renderMessages(); }catch(e){} }
+  if(ev.key === 'sm_last_broadcast' && ev.newValue){
+    try{
+      const env = JSON.parse(ev.newValue);
+      if(!env) return;
+      if(env.type === 'new_message' && env.channel && env.message){
+        ensureChannel(env.channel);
+        if(!messages[env.channel].some(x=>x.id===env.message.id)){
+          messages[env.channel].push(env.message);
+          saveMessages();
+          renderMessages();
+          renderUsers();
+        }
+      } else if(env.type === 'replace_messages' && env.messages){
+        messages = env.messages; saveMessages(); renderMessages(); renderUsers();
+      }
+    }catch(e){}
+  }
+});
+
+/* ======= UI wiring and init ======= */
+qs('toRegister').onclick = (e)=>{ e.preventDefault(); loginForm.style.display='none'; registerForm.style.display='block'; profileForm.style.display='none'; qs('authTitle').textContent='Регистрация'; }
+qs('toLogin').onclick = (e)=>{ e.preventDefault(); loginForm.style.display='block'; registerForm.style.display='none'; profileForm.style.display='none'; qs('authTitle').textContent='Вход / Регистрация'; }
+btnRegister.onclick = async ()=>{
+  try{
+    const u = qs('regUser').value.trim();
+    const p = qs('regPass').value;
+    const p2 = qs('regPass2').value;
+    if(p !== p2) { qs('regMsg').textContent = 'Пароли не совпадают'; return; }
+    let avatarData = null;
+    const f = regAvatarFile.files && regAvatarFile.files[0];
+    if(f){
+      if(!f.type.startsWith('image/')) { qs('regMsg').textContent = 'Файл не изображение'; return; }
+      avatarData = await readFileAsDataURL(f);
+    }
+    await registerUser(u,p,avatarData);
+    qs('regMsg').textContent = 'Готово. Теперь войдите.';
+    loginForm.style.display='block'; registerForm.style.display='none'; qs('authTitle').textContent='Вход / Регистрация';
+    qs('loginUser').value = u;
+    saveUsers();
+  }catch(err){ qs('regMsg').textContent = String(err); }
+};
+btnLogin.onclick = async ()=>{
+  try{
+    const u = qs('loginUser').value.trim();
+    const p = qs('loginPass').value;
+    const rem = rememberCheck.checked;
+    await loginUser(u,p,rem);
+    sidebarAvatar.src = getUserAvatar(u);
+  }catch(err){ alert(String(err)); }
+};
+btnLogout.onclick = ()=>{ currentUser = null; currentUserLabel.textContent = '—'; currentUserBio.textContent = '—'; sidebarAvatar.src = DEFAULT_AVATAR; authModal.style.display = 'flex'; };
+
+/* time display */
+setInterval(()=>{ serverTime.textContent = new Date().toLocaleTimeString(); }, 1000);
+
+/* startup */
+(function init(){
+  CHANNELS.forEach(c=>{ if(!messages[c.id]) messages[c.id]=[]; });
+  saveMessages(); saveUsers(); saveApp();
+  renderChannels(); renderUsers(); renderHeader();
+  tryAutoLogin();
+  if(!currentUser) authModal.style.display = 'flex'; else authModal.style.display = 'none';
+  sidebarAvatar.src = currentUser ? getUserAvatar(currentUser) : DEFAULT_AVATAR;
+  setTimeout(renderMessages, 60);
+})();
+</script>
+</body>
+</html>
